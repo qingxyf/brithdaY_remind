@@ -132,6 +132,7 @@ class BirthdayReminderPlugin(Star):
         )
         self._task: asyncio.Task | None = None
         self._stopped = asyncio.Event()
+        self._startup_catchup_done = False
         self._ensure_birthday_file()
         self._start_scheduler()
 
@@ -193,6 +194,7 @@ class BirthdayReminderPlugin(Star):
         self._start_scheduler()
 
     async def _scheduler_loop(self) -> None:
+        await self._send_startup_catchup_if_needed()
         while not self._stopped.is_set():
             try:
                 now = self._now()
@@ -215,6 +217,19 @@ class BirthdayReminderPlugin(Star):
                     break
                 except asyncio.TimeoutError:
                     pass
+
+    async def _send_startup_catchup_if_needed(self) -> None:
+        if self._startup_catchup_done:
+            return
+        self._startup_catchup_done = True
+
+        now = self._now()
+        send_at = datetime.combine(now.date(), self._send_time(), self._timezone())
+        if now < send_at:
+            return
+
+        logger.info("Running birthday startup catch-up for %s", now.date().isoformat())
+        await self._send_today_birthdays(now.date())
 
     def _now(self) -> datetime:
         return datetime.now(self._timezone())
@@ -647,19 +662,32 @@ class BirthdayReminderPlugin(Star):
         state.setdefault("sent", {})[sent_key] = sorted(sent_sessions)
         self._save_state(state)
 
+    @staticmethod
+    def _event_group_id(event: AstrMessageEvent) -> str:
+        return str(event.get_group_id() or "").strip()
+
+    @staticmethod
+    def _entries_for_group(
+        entries: list[BirthdayEntry], group_id: str
+    ) -> list[BirthdayEntry]:
+        return [
+            entry
+            for entry in entries
+            if entry.group_id == group_id or entry.group_id.endswith(f":{group_id}")
+        ]
+
     @filter.command("birthday_check")
     async def birthday_check(self, event: AstrMessageEvent):
+        event_group_id = self._event_group_id(event)
+        if not event_group_id:
+            yield event.plain_result("请在群聊里使用这个命令。")
+            return
+
         entries, errors = self._load_birthdays()
         today = self._now().date()
-        today_entries = self._entries_for_day(entries, today)
-        event_group_id = str(event.get_group_id() or "").strip()
-        if event_group_id:
-            today_entries = [
-                entry
-                for entry in today_entries
-                if entry.group_id == event_group_id
-                or entry.group_id.endswith(f":{event_group_id}")
-            ]
+        today_entries = self._entries_for_group(
+            self._entries_for_day(entries, today), event_group_id
+        )
         if today_entries:
             yield event.plain_result(
                 await self._build_birthday_message(
@@ -676,27 +704,30 @@ class BirthdayReminderPlugin(Star):
 
     @filter.command("birthday_reload")
     async def birthday_reload(self, event: AstrMessageEvent):
+        event_group_id = self._event_group_id(event)
+        if not event_group_id:
+            yield event.plain_result("请在群聊里使用这个命令。")
+            return
+
         entries, errors = self._load_birthdays()
-        message = f"已读取 {len(entries)} 条生日记录。"
+        group_entries = self._entries_for_group(entries, event_group_id)
+        message = f"当前群已读取 {len(group_entries)} 条生日记录。"
         if errors:
             message += "\n格式问题：\n" + "\n".join(errors[:10])
         yield event.plain_result(message)
 
     @filter.command("birthday_send_today")
     async def birthday_send_today(self, event: AstrMessageEvent):
-        event_group_id = str(event.get_group_id() or "").strip()
+        event_group_id = self._event_group_id(event)
         if not event_group_id:
             yield event.plain_result("请在需要发送祝福的群聊里使用这个命令。")
             return
 
         entries, errors = self._load_birthdays()
         today = self._now().date()
-        today_entries = [
-            entry
-            for entry in self._entries_for_day(entries, today)
-            if entry.group_id == event_group_id
-            or entry.group_id.endswith(f":{event_group_id}")
-        ]
+        today_entries = self._entries_for_group(
+            self._entries_for_day(entries, today), event_group_id
+        )
         if not today_entries:
             yield event.plain_result(f"今天（{today:%m-%d}）当前群没有生日记录。")
             return
@@ -716,15 +747,13 @@ class BirthdayReminderPlugin(Star):
 
     @filter.command("birthday_next")
     async def birthday_next(self, event: AstrMessageEvent):
+        event_group_id = self._event_group_id(event)
+        if not event_group_id:
+            yield event.plain_result("请在群聊里使用这个命令。")
+            return
+
         entries, errors = self._load_birthdays()
-        event_group_id = str(event.get_group_id() or "").strip()
-        if event_group_id:
-            entries = [
-                entry
-                for entry in entries
-                if entry.group_id == event_group_id
-                or entry.group_id.endswith(f":{event_group_id}")
-            ]
+        entries = self._entries_for_group(entries, event_group_id)
         today = self._now().date()
         upcoming = upcoming_birthdays(entries, today, limit=5)
         if not upcoming:
