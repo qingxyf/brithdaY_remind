@@ -27,7 +27,7 @@
     "description": "生日名单文件名",
     "type": "string",
     "default": "birthdays.txt",
-    "hint": "相对于插件目录的 txt 文件，每行一个姓名和生日"
+    "hint": "默认保存到 data/plugin_data/brithday_remind/birthdays.txt；每行一个姓名、生日和群号"
   },
   "use_llm_blessing": {
     "description": "使用模型生成生日祝福",
@@ -81,6 +81,6 @@
     "description": "发送记录文件名",
     "type": "string",
     "default": "sent_state.json",
-    "hint": "用于避免插件重启后同一天重复发送"
+    "hint": "默认保存到 data/plugin_data/brithday_remind/sent_state.json，用于避免同一天重复发送"
   }
 }

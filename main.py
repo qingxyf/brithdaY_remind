@@ -16,13 +16,18 @@ from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
 
 try:
-    from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+    from astrbot.core.utils.astrbot_path import (
+        get_astrbot_data_path,
+        get_astrbot_plugin_data_path,
+    )
 except Exception:  # pragma: no cover - compatible with older AstrBot versions
     get_astrbot_data_path = None
+    get_astrbot_plugin_data_path = None
 
 
 logger = logging.getLogger(__name__)
 
+PLUGIN_NAME = "brithday_remind"
 DEFAULT_PLATFORM_TYPE = "aiocqhttp"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_SEND_TIME = "00:00"
@@ -74,7 +79,7 @@ class BirthdayEntry:
 
 
 @register(
-    "brithday_remind",
+    PLUGIN_NAME,
     "qingxyf",
     "定时在指定群聊发送生日祝福",
     "1.0.0",
@@ -85,6 +90,7 @@ class BirthdayReminderPlugin(Star):
 
     Commands:
     /birthday_check - preview today's birthday message.
+    /birthday_send_today - send today's birthday message to the current group.
     /birthday_reload - validate the birthday text file.
     /birthday_next - show the next upcoming birthdays.
     """
@@ -93,11 +99,14 @@ class BirthdayReminderPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         self.plugin_dir = Path(__file__).resolve().parent
-        self.birthday_file = self.plugin_dir / str(
-            self.config.get("birthday_file", "birthdays.txt")
+        self.data_dir = self._resolve_data_dir()
+        self.birthday_file = self._resolve_data_file(
+            str(self.config.get("birthday_file", "birthdays.txt")),
+            "birthdays.txt",
         )
-        self.state_file = self.plugin_dir / str(
-            self.config.get("state_file", "sent_state.json")
+        self.state_file = self._resolve_data_file(
+            str(self.config.get("state_file", "sent_state.json")),
+            "sent_state.json",
         )
         self.timezone_name = str(self.config.get("timezone", DEFAULT_TIMEZONE))
         self.send_time_text = str(self.config.get("send_time", DEFAULT_SEND_TIME))
@@ -126,9 +135,39 @@ class BirthdayReminderPlugin(Star):
         self._ensure_birthday_file()
         self._start_scheduler()
 
+    def _resolve_data_dir(self) -> Path:
+        if get_astrbot_plugin_data_path is not None:
+            data_dir = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
+        elif get_astrbot_data_path is not None:
+            data_dir = Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME
+        else:
+            data_dir = self.plugin_dir
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
+
+    def _resolve_data_file(self, configured_path: str, fallback_name: str) -> Path:
+        path = Path(configured_path.strip() or fallback_name)
+        if path.is_absolute():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            return path
+        target = self.data_dir / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target
+
     def _ensure_birthday_file(self) -> None:
         if self.birthday_file.exists():
             return
+        legacy_file = self.plugin_dir / self.birthday_file.name
+        if legacy_file.exists() and legacy_file != self.birthday_file:
+            try:
+                self.birthday_file.write_text(
+                    legacy_file.read_text(encoding="utf-8-sig"),
+                    encoding="utf-8",
+                )
+                logger.info("Migrated legacy birthday file to plugin data directory")
+                return
+            except Exception:
+                logger.exception("Failed to migrate legacy birthday file")
         self.birthday_file.write_text(
             "# 每行写一个人物、生日、群号，支持：姓名 YYYY-MM-DD 群号、姓名 MM-DD 群号、姓名 M月D日 群号\n"
             "# 示例：\n"
@@ -238,7 +277,7 @@ class BirthdayReminderPlugin(Star):
         for session, session_entries in entries_by_session.items():
             if session in sent_sessions:
                 logger.info(
-                    "Birthday message already sent to %s on %s", session, sent_key
+                    "Birthday message already sent for this target on %s", sent_key
                 )
                 continue
 
@@ -248,16 +287,54 @@ class BirthdayReminderPlugin(Star):
                 session,
             )
 
-            ok = await self.context.send_message(
-                session, MessageChain([Plain(message)])
-            )
+            ok = await self._send_message_safely(session, message)
             if ok:
                 sent_sessions.add(session)
                 state.setdefault("sent", {})[sent_key] = sorted(sent_sessions)
                 self._save_state(state)
-                logger.info("Birthday message sent to %s", session)
+                logger.info("Birthday message sent")
             else:
-                logger.error("Birthday message failed, session not found: %s", session)
+                logger.warning("Birthday message skipped because target is unavailable")
+
+    async def _send_message_safely(self, session: str, message: str) -> bool:
+        try:
+            if not await self._target_group_available(session):
+                return False
+            return bool(
+                await self.context.send_message(session, MessageChain([Plain(message)]))
+            )
+        except ValueError:
+            logger.warning("Skip birthday message: invalid target session")
+        except Exception:
+            logger.warning(
+                "Skip birthday message: target group may be unavailable or the bot is not in it"
+            )
+        return False
+
+    async def _target_group_available(self, session: str) -> bool:
+        platform_id, message_type, group_id = _split_session(session)
+        if message_type != "GroupMessage" or not group_id:
+            return True
+
+        platform = self._platform_by_id(platform_id)
+        if platform is None:
+            logger.warning("Skip birthday message: target platform is unavailable")
+            return False
+
+        bot = getattr(platform, "bot", None)
+        call_action = getattr(bot, "call_action", None)
+        if call_action is None:
+            return True
+
+        try:
+            await call_action(
+                "get_group_info",
+                group_id=int(group_id) if group_id.isdigit() else group_id,
+            )
+            return True
+        except Exception:
+            logger.warning("Skip birthday message: bot may not be in the target group")
+            return False
 
     def _load_birthdays(self) -> tuple[list[BirthdayEntry], list[str]]:
         self._ensure_birthday_file()
@@ -412,13 +489,20 @@ class BirthdayReminderPlugin(Star):
 
     def _platform_name_for_session(self, session: str) -> str:
         platform_id = session.split(":", 1)[0]
+        platform = self._platform_by_id(platform_id)
+        if platform is not None:
+            meta = platform.meta()
+            return str(getattr(meta, "name", "") or platform_id)
+        return platform_id
+
+    def _platform_by_id(self, platform_id: str) -> Any | None:
         platform_manager = getattr(self.context, "platform_manager", None)
         platforms = getattr(platform_manager, "platform_insts", None) or []
         for platform in platforms:
             meta = platform.meta()
             if str(getattr(meta, "id", "")) == platform_id:
-                return str(getattr(meta, "name", "") or platform_id)
-        return platform_id
+                return platform
+        return None
 
     def _format_template(
         self,
@@ -555,6 +639,14 @@ class BirthdayReminderPlugin(Star):
             encoding="utf-8",
         )
 
+    def _mark_session_sent(self, today: date, session: str) -> None:
+        state = self._load_state()
+        sent_key = today.isoformat()
+        sent_sessions = set(state.get("sent", {}).get(sent_key, []))
+        sent_sessions.add(session)
+        state.setdefault("sent", {})[sent_key] = sorted(sent_sessions)
+        self._save_state(state)
+
     @filter.command("birthday_check")
     async def birthday_check(self, event: AstrMessageEvent):
         entries, errors = self._load_birthdays()
@@ -589,6 +681,38 @@ class BirthdayReminderPlugin(Star):
         if errors:
             message += "\n格式问题：\n" + "\n".join(errors[:10])
         yield event.plain_result(message)
+
+    @filter.command("birthday_send_today")
+    async def birthday_send_today(self, event: AstrMessageEvent):
+        event_group_id = str(event.get_group_id() or "").strip()
+        if not event_group_id:
+            yield event.plain_result("请在需要发送祝福的群聊里使用这个命令。")
+            return
+
+        entries, errors = self._load_birthdays()
+        today = self._now().date()
+        today_entries = [
+            entry
+            for entry in self._entries_for_day(entries, today)
+            if entry.group_id == event_group_id
+            or entry.group_id.endswith(f":{event_group_id}")
+        ]
+        if not today_entries:
+            yield event.plain_result(f"今天（{today:%m-%d}）当前群没有生日记录。")
+            return
+
+        message = await self._build_birthday_message(
+            today_entries,
+            today,
+            event.unified_msg_origin,
+        )
+        yield event.plain_result(message)
+        self._mark_session_sent(today, event.unified_msg_origin)
+
+        if errors:
+            yield event.plain_result(
+                f"另有 {len(errors)} 行生日文件格式有问题，可用 /birthday_reload 查看。"
+            )
 
     @filter.command("birthday_next")
     async def birthday_next(self, event: AstrMessageEvent):
@@ -699,6 +823,13 @@ def _extract_group_id(text: str) -> str:
     if not parts:
         return ""
     return parts[-1].strip(" \t,，|｜:：;；")
+
+
+def _split_session(session: str) -> tuple[str, str, str]:
+    parts = session.split(":", 2)
+    if len(parts) != 3:
+        return "", "", ""
+    return parts[0].strip(), parts[1].strip(), parts[2].strip()
 
 
 def _extract_persona_prompt(persona: Any) -> str:
