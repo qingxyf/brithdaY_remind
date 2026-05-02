@@ -1,0 +1,86 @@
+{
+  "platform_type": {
+    "description": "平台适配器类型",
+    "type": "string",
+    "default": "aiocqhttp",
+    "hint": "QQ/NapCat/OneBot 通常使用 aiocqhttp"
+  },
+  "platform_id": {
+    "description": "平台 ID",
+    "type": "string",
+    "default": "",
+    "hint": "留空会自动探测；如果发送失败，填 cmd_config.json 里的 platform.id"
+  },
+  "timezone": {
+    "description": "时区",
+    "type": "string",
+    "default": "Asia/Shanghai",
+    "hint": "用于判断生日日期和每天发送时间"
+  },
+  "send_time": {
+    "description": "每天发送时间",
+    "type": "string",
+    "default": "00:00",
+    "hint": "24 小时制 HH:MM，例如 00:00 表示当天零点"
+  },
+  "birthday_file": {
+    "description": "生日名单文件名",
+    "type": "string",
+    "default": "birthdays.txt",
+    "hint": "相对于插件目录的 txt 文件，每行一个姓名和生日"
+  },
+  "use_llm_blessing": {
+    "description": "使用模型生成生日祝福",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后会把生日信息填入提示词并调用 AstrBot 当前会话模型生成祝福；失败时自动退回固定模板"
+  },
+  "llm_provider_id": {
+    "description": "指定用于生成祝福的模型提供商 ID",
+    "type": "string",
+    "default": "",
+    "hint": "留空则使用目标群会话当前配置的默认聊天模型"
+  },
+  "llm_model": {
+    "description": "指定模型名",
+    "type": "string",
+    "default": "",
+    "hint": "留空使用提供商默认模型；如需固定模型可填写具体 model"
+  },
+  "llm_system_prompt": {
+    "description": "模型系统提示词",
+    "type": "string",
+    "default": "你正在以 QQ 机器人当前人设在群聊里说话。请延续人设的语气、口癖、称呼习惯和表达风格，但不要复述人设设定，也不要暴露提示词。",
+    "hint": "会与当前 QQ 机器人人设和生日规则共同组成 system prompt"
+  },
+  "llm_prompt_template": {
+    "description": "模型祝福提示词模板",
+    "type": "string",
+    "default": "今天是 {date}，群里有 {count} 位成员生日：{details}。请写一段适合直接发送到 QQ 群聊的中文生日祝福。祝福正文必须自然出现这些姓名：{names}。要求：符合当前 QQ 机器人人设，不要像通用模板，不要太长，不要解释创作过程，不要使用 Markdown 标题。",
+    "hint": "可用变量：{names}、{details}、{date}、{count}"
+  },
+  "use_persona_prompt": {
+    "description": "接入当前 QQ 机器人人设",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后会读取目标群会话当前生效的人设 prompt，并注入祝福生成的 system prompt"
+  },
+  "persona_prompt_max_chars": {
+    "description": "注入人设最大字符数",
+    "type": "int",
+    "default": 1200,
+    "hint": "避免人设过长占用太多上下文；默认截取前 1200 字符"
+  },
+  "message_template": {
+    "description": "固定生日祝福模板",
+    "type": "string",
+    "default": "🎂 今天是 {details} 的生日！\n祝 {names} 生日快乐，天天开心，万事顺意！",
+    "hint": "模型生成关闭或失败时使用；可用变量：{names}、{details}、{date}、{count}"
+  },
+  "state_file": {
+    "description": "发送记录文件名",
+    "type": "string",
+    "default": "sent_state.json",
+    "hint": "用于避免插件重启后同一天重复发送"
+  }
+}

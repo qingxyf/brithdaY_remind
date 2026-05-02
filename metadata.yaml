@@ -1,0 +1,6 @@
+name: brithday_remind
+desc: 定时在指定群聊发送生日祝福的 AstrBot 插件
+author: qingxyf
+version: 1.0.0
+repo: https://github.com/qingxyf/brithdaY_remind.git
+display_name: 生日提醒
